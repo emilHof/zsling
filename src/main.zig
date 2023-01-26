@@ -1,29 +1,30 @@
+//! This crates provides a sequentially locking Ring Buffer. It allows for
+//! a fast and non-writer-blocking SPMC-queue, where all consumers read all
+//! messages.
+//!
+//! # Usage
+//!
+//! There are two ways of consuming from the queue. If threads share a
+//! [`SharedReader`] through a shared reference, they will steal
+//! queue items from one anothers such that no two threads will read the
+//! same message. When a [`SharedReader`] is cloned, the new
+//! [`SharedReader`]'s reading progress will no longer affect the other
+//! one. If two threads each use a separate [`SharedReader`], they
+//! will be able to read the same messages.
+//!
+//! # Important!
+//!
+//! It is also important to keep in mind, that slow readers will be overrun by the writer if they
+//! do not consume messages quickly enough. This can happen quite frequently if the buffer size is
+//! not large enough. It is advisable to test applications on a case-by-case basis and find a
+//! buffer size that is optimal to your use-case.
+//! Error value returned by a failed write lock.
+
 const std = @import("std");
 const Ordering = std.atomic.Ordering;
 const testing = std.testing;
 const print = std.log.warn;
 
-/// This crates provides a sequentially locking Ring Buffer. It allows for
-/// a fast and non-writer-blocking SPMC-queue, where all consumers read all
-/// messages.
-///
-/// # Usage
-///
-/// There are two ways of consuming from the queue. If threads share a
-/// [`SharedReader`] through a shared reference, they will steal
-/// queue items from one anothers such that no two threads will read the
-/// same message. When a [`SharedReader`] is cloned, the new
-/// [`SharedReader`]'s reading progress will no longer affect the other
-/// one. If two threads each use a separate [`SharedReader`], they
-/// will be able to read the same messages.
-///
-/// # Important!
-///
-/// It is also important to keep in mind, that slow readers will be overrun by the writer if they
-/// do not consume messages quickly enough. This can happen quite frequently if the buffer size is
-/// not large enough. It is advisable to test applications on a case-by-case basis and find a
-/// buffer size that is optimal to your use-case.
-/// Error value returned by a failed write lock.
 pub const BufferErrors = error{LockError};
 
 fn Block(comptime S: usize) type {
