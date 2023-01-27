@@ -21,6 +21,7 @@
 //! Error value returned by a failed write lock.
 
 const std = @import("std");
+const bench = @import("./bench.zig");
 const Ordering = std.atomic.Ordering;
 const testing = std.testing;
 const print = std.log.warn;
@@ -273,4 +274,61 @@ test "test with threads" {
         writer.push_back([_]u8{ 0, 2, 4, 6 });
         std.Thread.yield() catch {};
     }
+}
+
+fn test_ping(reader: *RB.SharedReader, buffer: *RB, pinged: *bool) !void {
+    while (!@atomicLoad(bool, pinged, Ordering.Acquire)) {
+        if (reader.pop_front() != null) {
+            var w2: RB.WriteGuard = try buffer.lock();
+            w2.push_back([_]u8{ 1, 2, 3, 4 });
+            @atomicStore(bool, pinged, true, Ordering.Release);
+        }
+        try std.Thread.yield();
+    }
+}
+
+test "bench" {
+    try bench.benchmark(struct {
+        pub const args = [_]usize{ 1, 2, 4, 8 };
+
+        pub const arg_names = [_][]const u8{
+            "threads=1",
+            "threads=2",
+            "threads=4",
+            "threads=8",
+        };
+
+        pub const min_iterations = 100_000;
+        pub const max_iterations = 500_000;
+
+        pub fn ping(t: usize) !void {
+            var b1 = RB.init();
+            var b2 = RB.init();
+
+            var w1 = try b1.lock();
+            var r1 = b1.reader();
+            var r2 = b2.reader();
+
+            var pinged: bool = false;
+
+            var threads = Arr.init(testing.allocator);
+            defer threads.deinit();
+            errdefer threads.deinit();
+
+            defer while (threads.popOrNull()) |thread| {
+                thread.join();
+            };
+
+            var i: usize = 0;
+
+            while (i < t) : (i += 1) {
+                try threads.append(try std.Thread.spawn(.{}, test_ping, .{ &r1, &b2, &pinged }));
+            }
+
+            w1.push_back([_]u8{ 0, 2, 4, 6 });
+            while (r2.pop_front() == null) {
+                std.Thread.yield() catch {};
+            }
+        }
+    });
 }
