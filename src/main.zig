@@ -52,15 +52,13 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         data: [N]Block(S),
 
         /// Constructs a new, empty [`RingBuffer`] with a fixed length.
-        pub fn init() Self {
+        pub fn new() Self {
             var self = Self{
                 .index = 0,
                 .version = 0,
                 .locked = false,
-                .data = undefined,
+                .data = std.mem.zeroes([N]Block(S)),
             };
-
-            @memset(@ptrCast([*]u8, &self.data), 0, @sizeOf(Block(S)) * N);
 
             return self;
         }
@@ -166,8 +164,8 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
                     // This is `Release` on store to ensure that the new version of the `SharedReader` is
                     // observed by all sharing threads, and on failure we `Acquire` to ensure we get the
                     // latest version.
-                    if (@cmpxchgStrong(usize, &sr.index, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*new| {
-                        i = new.*;
+                    if (@cmpxchgStrong(usize, &sr.index, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*now| {
+                        i = now.*;
                         continue;
                     }
 
@@ -209,7 +207,7 @@ const log_level: std.log.level = .info;
 const MAX_SPIN: usize = 128;
 
 test "test buffer" {
-    var buffer = RB.init();
+    var buffer = RB.new();
 
     {
         var writer = try buffer.lock();
@@ -252,7 +250,7 @@ fn test_read_buffer(reader: *RB.SharedReader) void {
 
 const Arr = std.ArrayList(std.Thread);
 test "test with threads" {
-    var buffer = RB.init();
+    var buffer = RB.new();
     var writer = try buffer.lock();
     var reader = buffer.reader();
 
@@ -302,8 +300,8 @@ test "bench" {
         pub const max_iterations = 500_000;
 
         pub fn ping(t: usize) !void {
-            var b1 = RB.init();
-            var b2 = RB.init();
+            var b1 = comptime RB.new();
+            var b2 = comptime RB.new();
 
             var w1 = try b1.lock();
             var r1 = b1.reader();
