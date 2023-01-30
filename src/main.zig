@@ -21,6 +21,8 @@
 //! Error value returned by a failed write lock.
 
 const std = @import("std");
+const builtin = @import("builtin");
+// const bench = @import("root").bench;
 const bench = @import("./bench.zig");
 const Ordering = std.atomic.Ordering;
 const testing = std.testing;
@@ -35,6 +37,16 @@ fn Block(comptime S: usize) type {
     };
 }
 
+fn Padded(comptime T: type) type {
+    return switch (builtin.target.cpu.arch) {
+        .x86, .x86_64, .sparc64, .aarch64, .powerpc64 => struct {
+            data: T align(128),
+        },
+        .arm, .mips, .mips64, .riscv64 => struct { data: T align(32) },
+        else => struct { data: T align(64) },
+    };
+}
+
 /// A fixed-size, non-write-blocking, ring buffer, that behaves like a
 /// SPMC queue and can be safely shared across threads.
 /// It is limited to only work for types that are copy, as multiple
@@ -46,17 +58,17 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         // what else goes here?
         // version?
         // TODO(Emil): Can we make sure this is properly aligned for cache loads?
-        index: usize,
-        version: usize,
-        locked: bool,
+        index: Padded(usize),
+        version: Padded(usize),
+        locked: Padded(bool),
         data: [N]Block(S),
 
         /// Constructs a new, empty [`RingBuffer`] with a fixed length.
         pub fn new() Self {
             var self = Self{
-                .index = 0,
-                .version = 0,
-                .locked = false,
+                .index = std.mem.zeroes(Padded(usize)),
+                .version = std.mem.zeroes(Padded(usize)),
+                .locked = std.mem.zeroes(Padded(bool)),
                 .data = std.mem.zeroes([N]Block(S)),
             };
 
@@ -65,20 +77,20 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
 
         /// Increments the sequence at the current index by 1, making it odd, prohibiting reads.
         fn start_write(self: *Self) usize {
-            var index: usize = self.index;
+            var index: usize = self.index.data;
             var seq = self.data[index].version;
             @atomicStore(usize, &self.data[index].version, seq + 1, Ordering.Unordered);
 
             std.debug.assert(seq & 1 == 0);
 
-            @atomicStore(usize, &self.version, seq + 2, Ordering.Unordered);
+            @atomicStore(usize, &self.version.data, seq + 2, Ordering.Unordered);
 
             return index;
         }
 
         /// Increments the sequence at the current index by 1, making it even and allowing reads.
         fn end_write(self: *Self, index: usize) void {
-            @atomicStore(usize, &self.index, (index + 1) % N, Ordering.Unordered);
+            @atomicStore(usize, &self.index.data, (index + 1) % N, Ordering.Unordered);
             var seq = self.data[index].version;
             @atomicStore(usize, &self.data[index].version, seq + 1, Ordering.Release);
 
@@ -97,7 +109,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
             }
 
             pub fn drop(wg: WriteGuard) void {
-                @atomicStore(bool, &wg.buffer.locked, false, Ordering.Release);
+                @atomicStore(bool, &wg.buffer.locked.data, false, Ordering.Release);
             }
         };
 
@@ -105,7 +117,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         /// only ever be one thread holding a [`WriteGuard`], this fails if another thread is
         /// already holding the lock.
         pub fn lock(self: *Self) !WriteGuard {
-            if (@cmpxchgStrong(bool, &self.locked, false, true, Ordering.Acquire, Ordering.Monotonic) == null) {
+            if (@cmpxchgStrong(bool, &self.locked.data, false, true, Ordering.Acquire, Ordering.Monotonic) == null) {
                 return WriteGuard{
                     .buffer = self,
                 };
@@ -119,16 +131,16 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         /// on the queue. Distinct [`RingBuffers`] do not share progress.
         pub const SharedReader = struct {
             buffer: *RingBuffer(S, N),
-            index: usize,
-            version: usize,
+            index: Padded(usize),
+            version: Padded(usize),
 
             /// Pops the next element from the front. The element is only popped for us and other threads
             /// will still need to pop this for themselves.
             pub fn pop_front(sr: *SharedReader) ?[S]u8 {
-                var i: usize = @atomicLoad(usize, &sr.index, Ordering.Acquire);
+                var i: usize = @atomicLoad(usize, &sr.index.data, Ordering.Acquire);
 
                 while (true) {
-                    var ver: usize = @atomicLoad(usize, &sr.version, Ordering.Unordered);
+                    var ver: usize = @atomicLoad(usize, &sr.version.data, Ordering.Unordered);
 
                     // Ensures we are not reading old data, or data that is currently being written to.
                     // This is `Acquire` so we observed the write to data should seq1 == seq2.
@@ -155,7 +167,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
 
                     // On failure we end here, as we have an outdated version and thus are reading consumed
                     // data.
-                    if (@cmpxchgStrong(usize, &sr.version, ver, seq2, Ordering.Monotonic, Ordering.Monotonic) != null) {
+                    if (@cmpxchgStrong(usize, &sr.version.data, ver, seq2, Ordering.Monotonic, Ordering.Monotonic) != null) {
                         return null;
                     }
 
@@ -164,7 +176,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
                     // This is `Release` on store to ensure that the new version of the `SharedReader` is
                     // observed by all sharing threads, and on failure we `Acquire` to ensure we get the
                     // latest version.
-                    if (@cmpxchgStrong(usize, &sr.index, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*now| {
+                    if (@cmpxchgStrong(usize, &sr.index.data, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*now| {
                         i = now.*;
                         continue;
                     }
@@ -194,8 +206,8 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         pub fn reader(self: *Self) SharedReader {
             return SharedReader{
                 .buffer = self,
-                .index = 0,
-                .version = 0,
+                .index = std.mem.zeroes(Padded(usize)),
+                .version = std.mem.zeroes(Padded(usize)),
             };
         }
     };
