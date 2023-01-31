@@ -35,17 +35,38 @@ pub struct SharedReader {
     version: Padded<usize>,
 }
 
+#[allow(dead_code)]
+#[repr(u32)]
+enum Tag {
+    Success,
+    Error,
+}
+
+#[repr(C)]
+union U {
+    wg: std::mem::ManuallyDrop<WriteGuard>,
+    none: bool,
+}
+
+#[repr(C)]
+struct LockResult {
+    tag: Tag,
+    u: U,
+}
+
 #[link(name = "main", kind = "static")]
 extern "C" {
     fn new_buffer() -> RingBuffer;
 
-    fn lock_buffer(rb: *mut RingBuffer) -> WriteGuard;
+    fn lock_buffer(rb: *mut RingBuffer) -> LockResult;
 
     fn get_reader(rb: *mut RingBuffer) -> SharedReader;
 
     fn push_back(wg: *mut WriteGuard, val: u64);
 
     fn pop_front(sr: *mut SharedReader) -> u64;
+
+    fn drop_wg(wg: *mut WriteGuard);
 }
 
 impl RingBuffer {
@@ -54,7 +75,15 @@ impl RingBuffer {
     }
 
     pub fn try_lock(&self) -> Result<WriteGuard, ()> {
-        Ok(unsafe { lock_buffer(self as *const RingBuffer as *mut _) })
+        return unsafe {
+            match lock_buffer(self as *const RingBuffer as *mut _) {
+                LockResult {
+                    tag: Tag::Success,
+                    u,
+                } => Ok(std::mem::ManuallyDrop::into_inner(u.wg)),
+                _ => Err(()),
+            }
+        };
     }
 
     pub fn reader(&self) -> SharedReader {
@@ -70,6 +99,12 @@ impl WriteGuard {
         unsafe {
             push_back(self, std::mem::transmute(val));
         }
+    }
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        unsafe { drop_wg(self) }
     }
 }
 
@@ -99,6 +134,7 @@ mod tests {
     fn it_works() {
         let buffer = RingBuffer::new();
         let mut writer = buffer.try_lock().unwrap();
+        assert!(buffer.try_lock().is_err());
         let reader = buffer.reader();
         writer.push_back([0, 1, 2, 3, 4, 5, 6, 7]);
         println!("{:?}", reader.pop_front().unwrap());
@@ -110,5 +146,9 @@ mod tests {
         assert_eq!([0, 1, 2, 3, 4, 5, 6, 14], reader.pop_front().unwrap());
 
         println!("{:?}", reader.pop_front());
+
+        drop(writer);
+
+        assert!(buffer.try_lock().is_ok());
     }
 }

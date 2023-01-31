@@ -216,15 +216,18 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
 const RB = RingBuffer(8, 256);
 const WG = RB.WriteGuard;
 const SR = RB.SharedReader;
+const Tag = enum(c_int) { Success, Error };
+const U = extern union { wg: WG, none: bool };
+const LockResult = extern struct { t: Tag, u: U };
 
 // C bindings
 export fn new_buffer() callconv(.C) RB {
     return RB.new();
 }
 
-export fn lock_buffer(rb: *RB) callconv(.C) WG {
-    rb.locked.data = true;
-    return WG{ .buffer = rb };
+export fn lock_buffer(rb: *RB) callconv(.C) LockResult {
+    var wg = rb.lock() catch return LockResult{ .t = .Error, .u = U{ .none = false } };
+    return LockResult{ .t = .Success, .u = U{ .wg = wg } };
 }
 
 export fn get_reader(rb: *RB) callconv(.C) RB.SharedReader {
@@ -240,6 +243,10 @@ export fn pop_front(sr: *SR) u64 {
     return std.math.maxInt(u64);
 }
 
+export fn drop_wg(wg: *WG) void {
+    wg.drop();
+}
+
 const log_level: std.log.level = .info;
 const MAX_SPIN: usize = 128;
 
@@ -247,7 +254,12 @@ test "test buffer" {
     var buffer = RB.new();
 
     {
-        var writer = lock_buffer(&buffer);
+        var result = lock_buffer(&buffer);
+        var writer = switch (result.t) {
+            .Error => return error.LockError,
+            .Success => result.u.wg,
+        };
+
         defer writer.drop();
         writer.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
 
