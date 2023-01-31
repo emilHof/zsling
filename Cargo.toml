@@ -1,0 +1,18 @@
+[package]
+name = "zsling"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust Wrapper around a Sequentially lockign (SeqLock) Ring Buffer written in Zig"
+homepage = "https://docs.rs/zsling"
+documentation = "https://docs.rs/zsling"
+repository = "https://github.com/emilHof/zsling"
+readme = "./README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2.139"
+
+[build-dependencies]
+zigc = "0.0.0-alpha0.1"

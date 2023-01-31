@@ -7,3 +7,9 @@ deps.zig/
 deps.zig
 .zigmod
 deps.zig
+
+
+# Added by cargo
+
+/target
+/Cargo.lock

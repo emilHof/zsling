@@ -31,7 +31,7 @@ const print = std.log.warn;
 pub const BufferErrors = error{LockError};
 
 fn Block(comptime S: usize) type {
-    return struct {
+    return extern struct {
         version: usize,
         message: [S]u8,
     };
@@ -39,11 +39,11 @@ fn Block(comptime S: usize) type {
 
 fn Padded(comptime T: type) type {
     return switch (builtin.target.cpu.arch) {
-        .x86, .x86_64, .sparc64, .aarch64, .powerpc64 => struct {
+        .x86, .x86_64, .sparc64, .aarch64, .powerpc64 => extern struct {
             data: T align(16),
         },
-        .arm, .mips, .mips64, .riscv64 => struct { data: T align(4) },
-        else => struct { data: T align(8) },
+        .arm, .mips, .mips64, .riscv64 => extern struct { data: T align(4) },
+        else => extern struct { data: T align(8) },
     };
 }
 
@@ -52,7 +52,7 @@ fn Padded(comptime T: type) type {
 /// It is limited to only work for types that are copy, as multiple
 /// threads can read the same message.
 pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
-    return struct {
+    return extern struct {
         const Self = @This();
 
         // what else goes here?
@@ -98,7 +98,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         }
 
         /// Provides exclusive write access to the [`RingBuffer`].
-        pub const WriteGuard = struct {
+        pub const WriteGuard = extern struct {
             buffer: *RingBuffer(S, N),
 
             /// Push a new value to the back of the queue. This operation does not block.
@@ -129,7 +129,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
         /// Shared read access to its buffer. When multiple threads consume from the
         /// [`RingBuffer`] throught the same [`SharedReader`], they will share progress
         /// on the queue. Distinct [`RingBuffers`] do not share progress.
-        pub const SharedReader = struct {
+        pub const SharedReader = extern struct {
             buffer: *RingBuffer(S, N),
             index: Padded(usize),
             version: Padded(usize),
@@ -213,7 +213,32 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
     };
 }
 
-const RB = RingBuffer(4, 256);
+const RB = RingBuffer(8, 256);
+const WG = RB.WriteGuard;
+const SR = RB.SharedReader;
+
+// C bindings
+export fn new_buffer() callconv(.C) RB {
+    return RB.new();
+}
+
+export fn lock_buffer(rb: *RB) callconv(.C) WG {
+    rb.locked.data = true;
+    return WG{ .buffer = rb };
+}
+
+export fn get_reader(rb: *RB) callconv(.C) RB.SharedReader {
+    return rb.reader();
+}
+
+export fn push_back(wg: *WG, val: u64) void {
+    wg.push_back(@bitCast([8]u8, val));
+}
+
+export fn pop_front(sr: *SR) u64 {
+    if (sr.pop_front()) |val| return @bitCast(u64, val);
+    return std.math.maxInt(u64);
+}
 
 const log_level: std.log.level = .info;
 const MAX_SPIN: usize = 128;
@@ -222,9 +247,9 @@ test "test buffer" {
     var buffer = RB.new();
 
     {
-        var writer = try buffer.lock();
+        var writer = lock_buffer(&buffer);
         defer writer.drop();
-        writer.push_back([_]u8{ 0, 1, 2, 3 });
+        writer.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
 
         // we should not be able to acquire another reader while this one is alive.
         try testing.expectError(BufferErrors.LockError, buffer.lock());
@@ -234,8 +259,8 @@ test "test buffer" {
 
     var writer = try buffer.lock();
     defer writer.drop();
-    writer.push_back([_]u8{ 1, 2, 3, 4 });
-    std.log.warn("val: {any}", .{reader.pop_front()});
+    writer.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
+    std.log.warn("val: {any}", .{pop_front(&reader)});
 }
 
 fn test_read_buffer(reader: *RB.SharedReader) void {
@@ -281,7 +306,7 @@ test "test with threads" {
 
     var i: usize = 0;
     while (i < 1_000) : (i += 1) {
-        writer.push_back([_]u8{ 0, 2, 4, 6 });
+        writer.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
         std.Thread.yield() catch {};
     }
 }
@@ -290,7 +315,7 @@ fn test_ping(reader: *RB.SharedReader, buffer: *RB, pinged: *bool) !void {
     while (!@atomicLoad(bool, pinged, Ordering.Acquire)) {
         if (reader.pop_front() != null) {
             var w2: RB.WriteGuard = try buffer.lock();
-            w2.push_back([_]u8{ 1, 2, 3, 4 });
+            w2.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
             @atomicStore(bool, pinged, true, Ordering.Release);
         }
         try std.Thread.yield();
@@ -335,7 +360,7 @@ test "bench" {
                 try threads.append(try std.Thread.spawn(.{}, test_ping, .{ &r1, &b2, &pinged }));
             }
 
-            w1.push_back([_]u8{ 0, 2, 4, 6 });
+            w1.push_back([_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 });
             while (r2.pop_front() == null) {
                 std.Thread.yield() catch {};
             }
