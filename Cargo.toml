@@ -15,4 +15,4 @@ readme = "./README.md"
 libc = "0.2.139"
 
 [build-dependencies]
-zigc = "0.0.0-alpha0.1"
+zigc = "0.0.0-alpha0.2"
