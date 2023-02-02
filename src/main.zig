@@ -39,7 +39,7 @@ fn Block(comptime S: usize) type {
 
 fn Padded(comptime T: type) type {
     return switch (builtin.target.cpu.arch) {
-        .x86, .x86_64, .sparc64, .aarch64, .powerpc64 => extern struct {
+        .x86_64, .sparc64, .aarch64, .powerpc64 => extern struct {
             data: T align(16),
         },
         .arm, .mips, .mips64, .riscv64 => extern struct { data: T align(4) },
