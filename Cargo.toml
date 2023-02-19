@@ -1,6 +1,6 @@
 [package]
 name = "zsling"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Rust Wrapper around a Sequentially lockign (SeqLock) Ring Buffer written in Zig"

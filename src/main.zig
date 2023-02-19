@@ -150,6 +150,22 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
                         return null;
                     }
 
+                    // On failure we end here, as we have an outdated version and thus are reading consumed
+                    // data.
+                    if (@cmpxchgStrong(usize, &sr.version.data, ver, seq1, Ordering.Monotonic, Ordering.Monotonic) != null) {
+                        return null;
+                    }
+
+                    // If this fails, someone has already read the data. This is the only time we should
+                    // retry the loop.
+                    // This is `Release` on store to ensure that the new version of the `SharedReader` is
+                    // observed by all sharing threads, and on failure we `Acquire` to ensure we get the
+                    // latest version.
+                    if (@cmpxchgStrong(usize, &sr.index.data, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*now| {
+                        i = now.*;
+                        continue;
+                    }
+
                     var data: [S]u8 = undefined;
 
                     // We cannot test the this part of the process with `loom`, as this operation is `UB`
@@ -162,23 +178,7 @@ pub fn RingBuffer(comptime S: usize, comptime N: usize) type {
                     var seq2: usize = @atomicLoad(usize, &sr.buffer.data[i].version, Ordering.Acquire);
 
                     if (seq1 != seq2) {
-                        continue;
-                    }
-
-                    // On failure we end here, as we have an outdated version and thus are reading consumed
-                    // data.
-                    if (@cmpxchgStrong(usize, &sr.version.data, ver, seq2, Ordering.Monotonic, Ordering.Monotonic) != null) {
                         return null;
-                    }
-
-                    // If this fails, someone has already read the data. This is the only time we should
-                    // retry the loop.
-                    // This is `Release` on store to ensure that the new version of the `SharedReader` is
-                    // observed by all sharing threads, and on failure we `Acquire` to ensure we get the
-                    // latest version.
-                    if (@cmpxchgStrong(usize, &sr.index.data, i, (i + 1) % N, Ordering.Release, Ordering.Acquire)) |*now| {
-                        i = now.*;
-                        continue;
                     }
 
                     return data;
